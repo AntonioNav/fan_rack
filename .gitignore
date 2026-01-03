@@ -1,0 +1,7 @@
+secrets.yaml
+.esphome/
+
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
