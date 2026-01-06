@@ -32,3 +32,76 @@ captive_portal:
     
 web_server:
   port: 80
+
+# Bus para el sensor de temperatura DS18B20
+one_wire:
+  - platform: gpio
+    pin: GPIO21
+
+sensor:
+  # Sensor de temperatura del radiador
+  - platform: dallas_temp
+    name: "Temperatura Radiador"
+    id: temp_radiador
+    update_interval: 15s
+    filters:
+      - heartbeat: 60s
+
+  # Opcional: Sensor de RPM (usa el cable verde del ventilador)
+  - platform: pulse_counter
+    pin: 
+      number: GPIO19
+      mode: INPUT_PULLUP
+    name: "Velocidad Real Ventiladores"
+    id: fan_rpm
+    unit_of_measurement: "RPM"
+    update_interval: 30s
+    filters:
+      - multiply: 0.5
+
+# Salida PWM para los Arctic P14
+output:
+  - platform: ledc
+    pin: GPIO18
+    id: fan_pwm_output
+    frequency: 25000Hz
+
+fan:
+  - platform: speed
+    output: fan_pwm_output
+    name: "Ventiladores Radiador"
+    id: ventiladores
+    restore_mode: ALWAYS_OFF
+    speed_count: 100
+
+# --- LÓGICA DE CONTROL AUTOMÁTICO ---
+
+interval:
+  - interval: 30s
+    then:
+      - lambda: |-
+          float temp = id(temp_radiador).state;
+          
+          // Si la temperatura es desconocida (nan), por seguridad apagamos
+          if (isnan(temp)) {
+            id(ventiladores).turn_off();
+            return;
+          }
+
+          // Lógica de control:
+          if (temp > 35.0) {
+            // El radiador está caliente: Encender
+            // Calculamos una velocidad proporcional entre 35°C y 50°C
+            float speed = (temp - 30.0) / 20.0; // Ejemplo: a 40°C -> 0.5 (50%)
+            if (speed > 1.0) speed = 1.0;
+            if (speed < 0.2) speed = 0.2; // Mínimo para que no se paren
+            
+            auto call = id(ventiladores).make_call();
+            call.set_state(true);
+            call.set_speed(speed * 100);
+            call.perform();
+          } 
+          else if (temp < 30.0) {
+            // El radiador se ha enfriado: Apagar
+            id(ventiladores).turn_off();
+          }
