@@ -37,29 +37,9 @@ web_server:
 one_wire:
   - platform: gpio
     pin: GPIO21
+    id: bus_1
 
-sensor:
-  # Sensor de temperatura del radiador
-  - platform: dallas_temp
-    name: "Temperatura Radiador"
-    id: temp_radiador
-    update_interval: 15s
-    filters:
-      - heartbeat: 60s
-
-  # Opcional: Sensor de RPM (usa el cable verde del ventilador)
-  - platform: pulse_counter
-    pin: 
-      number: GPIO19
-      mode: INPUT_PULLUP
-    name: "Velocidad Real Ventiladores"
-    id: fan_rpm
-    unit_of_measurement: "RPM"
-    update_interval: 30s
-    filters:
-      - multiply: 0.5
-
-# Salida PWM para los Arctic P14
+# 1. Definimos primero la salida física y el ventilador
 output:
   - platform: ledc
     pin: GPIO18
@@ -71,37 +51,114 @@ fan:
     output: fan_pwm_output
     name: "Ventiladores Radiador"
     id: ventiladores
-    restore_mode: ALWAYS_OFF
     speed_count: 100
 
-# --- LÓGICA DE CONTROL AUTOMÁTICO ---
+# 2. Definimos el selector (que usará el ID 'ventiladores')
+select:
+  - platform: template
+    name: "Modo Ventiladores"
+    id: modo_ventilador
+    optimistic: true
+    options:
+      - "Apagado"
+      - "Automático"
+      - "Bajo (30%)"
+      - "Medio (60%)"
+      - "Alto (100%)"
+    initial_option: "Automático"
+    on_value:
+      then:
+        - lambda: |-
+            auto call = id(ventiladores).make_call();
+            if (x == "Apagado") {
+              call.set_state(false);
+              call.perform();
+            } else if (x == "Bajo (30%)") {
+              call.set_state(true);
+              call.set_speed(30);
+              call.perform();
+            } else if (x == "Medio (60%)") {
+              call.set_state(true);
+              call.set_speed(60);
+              call.perform();
+            } else if (x == "Alto (100%)") {
+              call.set_state(true);
+              call.set_speed(100);
+              call.perform();
+            }
 
+# 3. Sensores
+sensor:
+  - platform: uptime
+    name: Uptime
+    id: uptime_sensor
+    update_interval: 60s
+    on_raw_value:
+      then:
+        - text_sensor.template.publish:
+            id: uptime_human
+            # Custom C++ code to generate the result                                                                                                                                                                                     
+            state: !lambda |-
+              int seconds = round(id(uptime_sensor).raw_state);
+              int days = seconds / (24 * 3600);                                                                                                                                                                                          
+              seconds = seconds % (24 * 3600);                                                                                                                                                                                           
+              int hours = seconds / 3600;                                                                                                                                                                                                
+              seconds = seconds % 3600;                                                                                                                                                                                                  
+              int minutes = seconds /  60;                                                                                                                                                                                               
+              seconds = seconds % 60;                                                                                                                                                                                                    
+              return (                                                                                                                                                                                                                   
+                (days ? to_string(days) + "d " : "") +
+                (hours ? to_string(hours) + "h " : "") +
+                (minutes ? to_string(minutes) + "m " : "") +
+                (to_string(seconds) + "s")
+              ).c_str(); 
+
+  - platform: dallas_temp
+    one_wire_id: bus_1
+    name: "Temperatura Radiador"
+    id: temp_radiador
+    update_interval: 15s
+
+  - platform: pulse_counter
+    pin: 
+      number: GPIO19
+      mode: INPUT_PULLUP
+    name: "Velocidad Real"
+    id: fan_rpm
+    unit_of_measurement: "RPM"
+    update_interval: 15s
+    filters:
+      - multiply: 0.5
+
+text_sensor:
+  # Send IP Address                                                                                                                                                                                                                      
+  - platform: wifi_info
+    ip_address:
+      name: IP Address
+
+  # Send Uptime in raw seconds                                                                                                                                                                                                           
+  - platform: template
+    name: Uptime
+    id: uptime_human
+    icon: mdi:clock-start
+
+# 4. Lógica de control
 interval:
   - interval: 30s
     then:
       - lambda: |-
-          float temp = id(temp_radiador).state;
-          
-          // Si la temperatura es desconocida (nan), por seguridad apagamos
-          if (isnan(temp)) {
-            id(ventiladores).turn_off();
-            return;
-          }
+          if (id(modo_ventilador).state == "Automático") {
+            float temp = id(temp_radiador).state;
+            if (isnan(temp)) return;
 
-          // Lógica de control:
-          if (temp > 35.0) {
-            // El radiador está caliente: Encender
-            // Calculamos una velocidad proporcional entre 35°C y 50°C
-            float speed = (temp - 30.0) / 20.0; // Ejemplo: a 40°C -> 0.5 (50%)
-            if (speed > 1.0) speed = 1.0;
-            if (speed < 0.2) speed = 0.2; // Mínimo para que no se paren
-            
             auto call = id(ventiladores).make_call();
-            call.set_state(true);
-            call.set_speed(speed * 100);
-            call.perform();
-          } 
-          else if (temp < 30.0) {
-            // El radiador se ha enfriado: Apagar
-            id(ventiladores).turn_off();
+            if (temp > 30.0) {
+              int speed = (int)clamp((temp - 25.0) * 5.0, 25.0, 100.0); 
+              call.set_state(true);
+              call.set_speed(speed);
+              call.perform();
+            } else if (temp < 25.0) {
+              call.set_state(false);
+              call.perform();
+            }
           }
