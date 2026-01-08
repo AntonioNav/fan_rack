@@ -60,6 +60,33 @@ select:
               call.perform();
             }
 
+# common/base_fan_rack.yaml
+
+number:
+  - platform: template
+    name: "Umbral Encendido"
+    id: umbral_encendido
+    min_value: 30
+    max_value: 50
+    step: 1
+    unit_of_measurement: "°C"
+    initial_value: 35
+    optimistic: true
+    restore_value: true
+    icon: "mdi:thermometer-plus"
+
+  - platform: template
+    name: "Umbral Apagado"
+    id: umbral_apagado
+    min_value: 15
+    max_value: 35
+    step: 1
+    unit_of_measurement: "°C"
+    initial_value: 25
+    optimistic: true
+    restore_value: true
+    icon: "mdi:thermometer-minus"
+
 sensor:
   - platform: uptime
     name: Uptime Raw
@@ -109,11 +136,22 @@ interval:
           if (id(modo_ventilador).state == "Automático") {
             float temp = id(temp_radiador).state;
             if (isnan(temp)) return;
+
+            // Leemos los umbrales configurados desde Home Assistant
+            float t_on = id(umbral_encendido).state;
+            float t_off = id(umbral_apagado).state;
+
             auto call = id(ventiladores).make_call();
-            if (temp > 30.0) {
-              int speed = (int)clamp((temp - 25.0) * 5.0, 25.0, 100.0); 
-              call.set_state(true).set_speed(speed).perform();
-            } else if (temp < 25.0) {
-              call.set_state(false).perform();
+            
+            if (temp > t_on) {
+              // Calculamos la velocidad proporcional
+              // El 5.0 es el factor de aceleración, puedes ajustarlo si quieres
+              int speed = (int)clamp((temp - t_off) * 5.0, 25.0, 100.0); 
+              call.set_state(true);
+              call.set_speed(speed);
+              call.perform();
+            } else if (temp < t_off) {
+              call.set_state(false);
+              call.perform();
             }
           }
