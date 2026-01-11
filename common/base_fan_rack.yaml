@@ -42,9 +42,9 @@ select:
     options:
       - "Apagado"
       - "Automático"
-      - "Bajo (30%)"
-      - "Medio (60%)"
-      - "Alto (100%)"
+      - "Bajo (25%)"
+      - "Medio (40%)"
+      - "Alto (60%)"
     initial_option: "Automático"
     on_value:
       then:
@@ -54,7 +54,7 @@ select:
               call.set_state(false);
               call.perform();
             } else {
-              int s = (x == "Bajo (30%)") ? 30 : (x == "Medio (60%)" ? 60 : 100);
+              int s = (x == "Bajo (25%)") ? 25 : (x == "Medio (40%)" ? 40 : 60);
               call.set_state(true);
               call.set_speed(s);
               call.perform();
@@ -88,20 +88,20 @@ number:
     icon: "mdi:thermometer-minus"
 
 sensor:
-  - platform: uptime
-    name: Uptime Raw
-    id: uptime_sensor
-    update_interval: 60s
-    on_raw_value:
-      then:
-        - text_sensor.template.publish:
-            id: uptime_human
-            state: !lambda |-
-              int seconds = round(id(uptime_sensor).raw_state);
-              int days = seconds / 86400;
-              int hours = (seconds % 86400) / 3600;
-              int minutes = (seconds % 3600) / 60;
-              return ((days ? to_string(days) + "d " : "") + (hours ? to_string(hours) + "h " : "") + (minutes ? to_string(minutes) + "m " : "") + to_string(seconds % 60) + "s").c_str();
+  # - platform: uptime
+  #   name: Uptime Raw
+  #   id: uptime_sensor
+  #   update_interval: 60s
+  #   on_raw_value:
+  #     then:
+  #       - text_sensor.template.publish:
+  #           id: uptime_human
+  #           state: !lambda |-
+  #             int seconds = round(id(uptime_sensor).raw_state);
+  #             int days = seconds / 86400;
+  #             int hours = (seconds % 86400) / 3600;
+  #             int minutes = (seconds % 3600) / 60;
+  #             return ((days ? to_string(days) + "d " : "") + (hours ? to_string(hours) + "h " : "") + (minutes ? to_string(minutes) + "m " : "") + to_string(seconds % 60) + "s").c_str();
 
   - platform: dallas_temp
     one_wire_id: bus_1
@@ -124,34 +124,51 @@ text_sensor:
   - platform: wifi_info
     ip_address:
       name: IP Address
-  - platform: template
-    name: Uptime
-    id: uptime_human
-    icon: mdi:clock-start
+  # - platform: template
+  #   name: Uptime
+  #   id: uptime_human
+  #   icon: mdi:clock-start
 
 interval:
   - interval: 30s
     then:
       - lambda: |-
           if (id(modo_ventilador).state == "Automático") {
+
             float temp = id(temp_radiador).state;
             if (isnan(temp)) return;
 
-            // Leemos los umbrales configurados desde Home Assistant
-            float t_on = id(umbral_encendido).state;
-            float t_off = id(umbral_apagado).state;
+            float t_on  = id(umbral_encendido).state; // ej. 35
+            float t_off = id(umbral_apagado).state;   // ej. 25
+
+            const float t_max = 45.0;
+            const float v_min = 25.0;
+            const float v_max = 60.0;
 
             auto call = id(ventiladores).make_call();
-            
-            if (temp > t_on) {
-              // Calculamos la velocidad proporcional
-              // El 5.0 es el factor de aceleración, puedes ajustarlo si quieres
-              int speed = (int)clamp((temp - t_off) * 5.0, 25.0, 100.0); 
+
+            if (temp >= t_on) {
+
+              float slope = (v_max - v_min) / (t_max - t_on);
+              float speed = v_min + (temp - t_on) * slope;
+
+              speed = clamp(speed, v_min, v_max);
+
               call.set_state(true);
-              call.set_speed(speed);
+              call.set_speed((int)speed);
               call.perform();
-            } else if (temp < t_off) {
+
+            } else if (temp <= t_off) {
+
+              // Apagado completo solo cuando está realmente frío
               call.set_state(false);
+              call.perform();
+
+            } else {
+
+              // Zona muerta: ventilador girando al mínimo (silencioso)
+              call.set_state(true);
+              call.set_speed((int)v_min);
               call.perform();
             }
           }
