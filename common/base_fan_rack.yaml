@@ -1,0 +1,174 @@
+# common/base_fan_rack.yaml
+
+# Valores por defecto si no se definen en el archivo del radiador
+substitutions:
+  pin_one_wire: "GPIO21"
+  pin_pwm: "GPIO18"
+  pin_tacho: "GPIO19"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+web_server:
+  port: 80
+captive_portal:
+
+one_wire:
+  - platform: gpio
+    pin: ${pin_one_wire}
+    id: bus_1
+
+output:
+  - platform: ledc
+    pin: ${pin_pwm}
+    id: fan_pwm_output
+    frequency: 25000Hz
+
+fan:
+  - platform: speed
+    output: fan_pwm_output
+    name: "Ventiladores Radiador"
+    id: ventiladores
+    speed_count: 100
+
+select:
+  - platform: template
+    name: "Modo Ventiladores"
+    id: modo_ventilador
+    optimistic: true
+    options:
+      - "Apagado"
+      - "Automático"
+      - "Bajo (25%)"
+      - "Medio (40%)"
+      - "Alto (60%)"
+    initial_option: "Automático"
+    on_value:
+      then:
+        - lambda: |-
+            auto call = id(ventiladores).make_call();
+            if (x == "Apagado") {
+              call.set_state(false);
+              call.perform();
+            } else {
+              int s = (x == "Bajo (25%)") ? 25 : (x == "Medio (40%)" ? 40 : 60);
+              call.set_state(true);
+              call.set_speed(s);
+              call.perform();
+            }
+
+# common/base_fan_rack.yaml
+
+number:
+  - platform: template
+    name: "Umbral Encendido"
+    id: umbral_encendido
+    min_value: 30
+    max_value: 50
+    step: 1
+    unit_of_measurement: "°C"
+    initial_value: 35
+    optimistic: true
+    restore_value: true
+    icon: "mdi:thermometer-plus"
+
+  - platform: template
+    name: "Umbral Apagado"
+    id: umbral_apagado
+    min_value: 15
+    max_value: 35
+    step: 1
+    unit_of_measurement: "°C"
+    initial_value: 25
+    optimistic: true
+    restore_value: true
+    icon: "mdi:thermometer-minus"
+
+sensor:
+  # - platform: uptime
+  #   name: Uptime Raw
+  #   id: uptime_sensor
+  #   update_interval: 60s
+  #   on_raw_value:
+  #     then:
+  #       - text_sensor.template.publish:
+  #           id: uptime_human
+  #           state: !lambda |-
+  #             int seconds = round(id(uptime_sensor).raw_state);
+  #             int days = seconds / 86400;
+  #             int hours = (seconds % 86400) / 3600;
+  #             int minutes = (seconds % 3600) / 60;
+  #             return ((days ? to_string(days) + "d " : "") + (hours ? to_string(hours) + "h " : "") + (minutes ? to_string(minutes) + "m " : "") + to_string(seconds % 60) + "s").c_str();
+
+  - platform: dallas_temp
+    one_wire_id: bus_1
+    name: "Temperatura Radiador"
+    id: temp_radiador
+    update_interval: 10s
+
+  - platform: pulse_counter
+    pin: 
+      number: ${pin_tacho}
+      mode: INPUT_PULLUP
+    name: "Velocidad Real"
+    id: fan_rpm
+    unit_of_measurement: "RPM"
+    update_interval: 15s
+    filters:
+      - multiply: 0.5
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: IP Address
+  # - platform: template
+  #   name: Uptime
+  #   id: uptime_human
+  #   icon: mdi:clock-start
+
+interval:
+  - interval: 30s
+    then:
+      - lambda: |-
+          if (id(modo_ventilador).state == "Automático") {
+
+            float temp = id(temp_radiador).state;
+            if (isnan(temp)) return;
+
+            float t_on  = id(umbral_encendido).state; // ej. 35
+            float t_off = id(umbral_apagado).state;   // ej. 25
+
+            const float t_max = 45.0;
+            const float v_min = 25.0;
+            const float v_max = 60.0;
+
+            auto call = id(ventiladores).make_call();
+
+            if (temp >= t_on) {
+
+              float slope = (v_max - v_min) / (t_max - t_on);
+              float speed = v_min + (temp - t_on) * slope;
+
+              speed = clamp(speed, v_min, v_max);
+
+              call.set_state(true);
+              call.set_speed((int)speed);
+              call.perform();
+
+            } else if (temp <= t_off) {
+
+              // Apagado completo solo cuando está realmente frío
+              call.set_state(false);
+              call.perform();
+
+            } else {
+
+              // Zona muerta: ventilador girando al mínimo (silencioso)
+              call.set_state(true);
+              call.set_speed((int)v_min);
+              call.perform();
+            }
+          }
